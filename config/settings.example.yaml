@@ -1,0 +1,32 @@
+# 提交到版本控制的安全默认配置。
+login:
+  login_url: "https://e-tracking.customs.go.th/ETS/"
+  tax_id: "YOUR_TAX_ID"
+  branch_id: "YOUR_BRANCH_ID"
+  browser:
+    headless: false
+    timeout: 120000
+  printer_card_number: "YOUR_PRINTER_CARD_NUMBER"
+  printer_phone_number: "YOUR_PRINTER_PHONE_NUMBER"
+
+file:
+  output_dir: "runtime/receipts"
+  name_format: "{receipt_id}.pdf"
+  min_pdf_bytes: 1024
+
+logging:
+  level: "INFO"
+  log_file: "runtime/logs/etracking.log"
+  screenshot_dir: "runtime/logs/screenshots"
+  session_state_file: "runtime/session/state.json"
+
+retry:
+  max_retries: 3
+  delay: 0.5
+  use_exponential_backoff: true
+
+excel:
+  path: "data/orders.xlsx"
+  sheet_name: null
+  column: "F"
+  skip_header: true

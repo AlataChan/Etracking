@@ -1,0 +1,43 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+## manual
+
+### ✅ 增加验证码处理模块
+**Description**：接入 OCR 识别图形验证码（若后续登录有验证码）
+**Steps**：
+1. 集成 `ddddocr` 或 `paddleocr`
+2. 编写 `recognize_captcha()` 工具方法
+3. 在 login 流程中调用并填入验证码字段
+
+---
+
+### 🔁 添加失败重试逻辑
+**Description**：网络波动/加载失败场景增加重试保护
+**Steps**：
+1. 为每个订单处理逻辑封装 `retry_wrapper`
+2. 设置最大尝试次数（如 3 次）
+3. 失败订单写入 CSV + 错误日志
+
+---
+
+### 📊 添加处理结果报告
+**Description**：任务完成后自动生成汇总报告
+**Steps**：
+1. 创建 `report_generator.py`
+2. 成功/失败提单列表导出为 `CSV`
+3. 汇总处理耗时、失败原因等写入日志
+
+---
+
+### 📦 Docker 化部署支持
+**Description**：构建自动化容器部署镜像
+**Steps**：
+1. 创建 Dockerfile（Python + Playwright）
+2. 拷贝 `session/state.json` 与数据源
+3. 设置入口为 `python src/main.py`
+
+---
