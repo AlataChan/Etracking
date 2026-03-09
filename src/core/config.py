@@ -21,6 +21,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "browser": {
             "headless": False,
             "timeout": 120000,
+            "channel": "",
+            "cdp_url": "",
         },
     },
     "file": {
@@ -71,6 +73,7 @@ def _apply_env_overrides(settings: dict[str, Any]) -> dict[str, Any]:
         "login.branch_id": os.getenv("ETRACKING_BRANCH_ID"),
         "login.printer_card_number": os.getenv("ETRACKING_PRINTER_CARD_NUMBER"),
         "login.printer_phone_number": os.getenv("ETRACKING_PRINTER_PHONE_NUMBER"),
+        "login.browser.cdp_url": os.getenv("ETRACKING_BROWSER_CDP_URL"),
         "excel.path": os.getenv("ETRACKING_EXCEL_PATH"),
         "file.output_dir": os.getenv("ETRACKING_OUTPUT_DIR"),
     }
@@ -120,6 +123,20 @@ class AppSettings:
         return int(self.raw["login"]["browser"].get("timeout", 120000))
 
     @property
+    def browser_channel(self) -> str | None:
+        value = self.raw["login"]["browser"].get("channel")
+        if value in (None, ""):
+            return None
+        return str(value)
+
+    @property
+    def browser_cdp_url(self) -> str | None:
+        value = self.raw["login"]["browser"].get("cdp_url")
+        if value in (None, ""):
+            return None
+        return str(value)
+
+    @property
     def output_dir(self) -> Path:
         return Path(self.raw["file"].get("output_dir", "runtime/receipts"))
 
@@ -161,3 +178,10 @@ def load_settings(project_root: Path | None = None) -> AppSettings:
         merged = _deep_merge(merged, _read_yaml(config_dir / filename))
     merged = _apply_env_overrides(merged)
     return AppSettings(project_root=root, raw=merged)
+
+
+def with_settings_overrides(settings: AppSettings, overrides: dict[str, Any]) -> AppSettings:
+    return AppSettings(
+        project_root=settings.project_root,
+        raw=_deep_merge(settings.raw, overrides),
+    )

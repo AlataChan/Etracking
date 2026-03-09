@@ -42,11 +42,13 @@ file:
         encoding="utf-8",
     )
     monkeypatch.setenv("ETRACKING_BRANCH_ID", "99")
+    monkeypatch.setenv("ETRACKING_BROWSER_CDP_URL", "http://127.0.0.1:9222")
 
     settings = load_settings(project_root=tmp_path)
 
     assert settings.login_url == "https://example.invalid"
     assert settings.tax_id == "LOCAL"
     assert settings.branch_id == "99"
+    assert settings.browser_cdp_url == "http://127.0.0.1:9222"
     assert settings.output_dir == Path("runtime/custom-receipts")
     assert settings.excel_path == Path("data/orders.xlsx")

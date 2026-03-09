@@ -6,6 +6,8 @@ login:
   browser:
     headless: false
     timeout: 120000
+    channel: ""
+    cdp_url: ""
   printer_card_number: "YOUR_PRINTER_CARD_NUMBER"
   printer_phone_number: "YOUR_PRINTER_PHONE_NUMBER"
 

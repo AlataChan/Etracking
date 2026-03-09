@@ -1,0 +1,17 @@
+{
+  "currentUrl": "blob:https://example.invalid/receipt-123",
+  "networkRequests": [
+    {
+      "url": "https://example.invalid/api/search",
+      "method": "POST",
+      "resource_type": "fetch",
+      "status": 200
+    },
+    {
+      "url": "blob:https://example.invalid/receipt-123",
+      "method": "GET",
+      "resource_type": "document",
+      "status": 200
+    }
+  ]
+}

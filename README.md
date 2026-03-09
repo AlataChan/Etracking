@@ -7,6 +7,7 @@
 - 运行期文件放到 `runtime/`
 - 浏览器与旧流程代码仍在 `src/session_manager.py`，但新的配置、路径、结果和批处理边界已经拆到 `src/core/`、`src/workflow/`、`src/support/`
 - 默认离线测试只跑 `tests/unit/`
+- 现场浏览器冒烟测试位于 `tests/integration/`，需要显式 opt-in
 
 ## 安装
 
@@ -25,7 +26,7 @@ playwright install chromium
 
 - `config/settings.yaml`
 - `config/settings.local.yaml`
-- 环境变量：`ETRACKING_TAX_ID`、`ETRACKING_BRANCH_ID`、`ETRACKING_PRINTER_CARD_NUMBER`、`ETRACKING_PRINTER_PHONE_NUMBER`、`ETRACKING_EXCEL_PATH`、`ETRACKING_OUTPUT_DIR`
+- 环境变量：`ETRACKING_TAX_ID`、`ETRACKING_BRANCH_ID`、`ETRACKING_PRINTER_CARD_NUMBER`、`ETRACKING_PRINTER_PHONE_NUMBER`、`ETRACKING_BROWSER_CDP_URL`、`ETRACKING_EXCEL_PATH`、`ETRACKING_OUTPUT_DIR`
 
 本地配置文件已被 [`.gitignore`](/Users/apple/Documents/2.1 AI Journey/Cursor_projects/Etracking/.gitignore) 忽略，不应提交。
 
@@ -73,6 +74,18 @@ playwright install chromium
 ./.venv/bin/python -m src.main --batch --output-dir runtime/receipts
 ```
 
+连接到已启动的 Chrome DevTools 会话：
+
+```bash
+./.venv/bin/python -m src.main --cdp-url http://127.0.0.1:9222 --order-id A017X680406286
+```
+
+只重跑之前失败的订单：
+
+```bash
+./.venv/bin/python -m src.main --retry-failed-from runtime/reports/<job_id>/results.jsonl
+```
+
 ## Job 输出
 
 每次批量运行都会写出：
@@ -108,3 +121,11 @@ playwright install chromium
 - PDF 校验规则
 - 语义化 receipt flow 选择器
 - 批处理参数传播
+- DevTools 诊断载荷
+- CDP attach 到现有 Chrome 会话
+- OpenClaw 合同面
+
+相关文档：
+
+- [DevTools 调试流程](/Users/apple/Documents/2.1 AI Journey/Cursor_projects/Etracking/docs/devtools-debugging.md)
+- [OpenClaw 集成约定](/Users/apple/Documents/2.1 AI Journey/Cursor_projects/Etracking/docs/openclaw-integration.md)
