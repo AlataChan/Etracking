@@ -383,6 +383,23 @@ A receipt is only successful when all are true:
 - Second: browser-native file download
 - Third: controlled PDF export only if it still yields a real PDF
 - Never: mark screenshot fallback as success
+- If a print action opens a popup/blob viewer, close that viewer immediately after the PDF is successfully persisted
+- Wait only until the blob/PDF source is fetchable; do not block on a fully rendered viewer UI if capture can already proceed
+
+**Step 2.5: Keep the steady-state batch loop minimal**
+
+Once `ERVQ1020` is already expanded and ready, the per-order hot path should be only:
+
+- fill the next order id
+- search
+- click print
+- persist the PDF artifact
+- close the popup/viewer if one was opened
+- continue to the next order
+
+Do not re-run taxpayer validation or printer-info filling on every order unless the session was explicitly recycled or resumed into a partial state.
+
+Success-path PDF viewer screenshots should be configurable. Keep them available during diagnosis, but plan to disable them by default after the flow is validated because they add avoidable latency and I/O cost in large batches.
 
 **Step 3: Add explicit result classes**
 
@@ -431,6 +448,7 @@ must propagate into the batch runner instead of being silently ignored.
 - retry only transient failures
 - do not retry validation failures blindly
 - allow rerun of only failed orders
+- when attached to an already-expanded receipt page, probe for a pre-existing matching result row only on the first order after attach or after a session recycle; do not pay that probe cost on every steady-state order
 
 **Step 4: Verify**
 

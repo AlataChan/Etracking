@@ -137,6 +137,7 @@ class SessionManager:
         self.current_receipt_result: Optional[ReceiptResult] = None
         self.attached_over_cdp = False
         self.resumed_from_expanded_form = False
+        self.resume_search_probe_pending = True
 
     def __enter__(self) -> "SessionManager":
         try:
@@ -579,11 +580,11 @@ class SessionManager:
             raise LookupError(f"未找到订单 {order_id} 结果行内的打印图标") from last_error
         raise LookupError(f"未找到订单 {order_id} 结果行内的打印图标")
 
-    def _wait_for_pdf_viewer_ready(self, pdf_page: Page) -> None:
-        deadline = time.time() + 20
+    def _wait_for_pdf_capture_ready(self, pdf_page: Page) -> None:
+        deadline = time.time() + 10
         while time.time() < deadline:
             current_url = getattr(pdf_page, "url", "")
-            if current_url.startswith("blob:") or "pdf" in current_url.lower():
+            if current_url.startswith("blob:"):
                 return
             try:
                 viewer_ready = pdf_page.evaluate(
@@ -593,19 +594,20 @@ class SessionManager:
                             'iframe[src^="blob:"]',
                             'object[data^="blob:"]',
                             'a[href^="blob:"]',
-                            'embed[type="application/pdf"]',
-                            'object[type="application/pdf"]'
                         ];
-                        return selectors.some((selector) => document.querySelector(selector));
+                        return {
+                            hasBlobSource: selectors.some((selector) => document.querySelector(selector)),
+                            readyState: document.readyState,
+                        };
                     }"""
                 )
-                if viewer_ready:
+                if isinstance(viewer_ready, dict) and viewer_ready.get("hasBlobSource"):
                     return
             except Exception:
                 pass
-            time.sleep(0.5)
+            time.sleep(0.25)
 
-        raise RuntimeError(f"PDF viewer did not become ready for page: {getattr(pdf_page, 'url', '')}")
+        raise RuntimeError(f"PDF capture source did not become ready for page: {getattr(pdf_page, 'url', '')}")
 
     def _open_pdf_page_for_order(self, order_id: str) -> Page:
         assert self.context is not None
@@ -621,8 +623,16 @@ class SessionManager:
         if pdf_page is not self.page:
             self.inspector.attach(pdf_page)
 
-        self._wait_for_pdf_viewer_ready(pdf_page)
+        self._wait_for_pdf_capture_ready(pdf_page)
         return pdf_page
+
+    def _close_pdf_popup(self, pdf_page: Page) -> None:
+        if pdf_page is self.page:
+            return
+        try:
+            pdf_page.close()
+        except Exception as error:
+            logger.warning(f"关闭 PDF popup 失败: {error}")
 
     def _try_direct_blob_fetch(self, pdf_page: Page) -> bytes | None:
         try:
@@ -701,11 +711,20 @@ class SessionManager:
         assert self.page is not None
         assert self.receipt_flow is not None
 
+        pdf_page: Page | None = None
         try:
             logger.info(f"开始处理订单流程: {order_id}")
+            should_probe_existing_state = self.attached_over_cdp and self.resume_search_probe_pending
             existing_state = (
-                self._poll_search_state(order_id, timeout_seconds=2) if self.attached_over_cdp else {"match": None}
+                self._poll_search_state(
+                    order_id,
+                    timeout_seconds=self.settings.batch_resume_probe_timeout_seconds,
+                )
+                if should_probe_existing_state
+                else {"match": None}
             )
+            if should_probe_existing_state:
+                self.resume_search_probe_pending = False
             if existing_state.get("match"):
                 logger.info(f"附加页面已存在订单结果行，直接进入打印步骤: {order_id}")
             else:
@@ -719,7 +738,11 @@ class SessionManager:
                 self._wait_for_search_results(order_id)
             logger.info(f"等待打印 popup/pdf viewer: {order_id}")
             pdf_page = self._open_pdf_page_for_order(order_id)
-            screenshot = self._capture_screenshot(f"pdf_page_{order_id}", page=pdf_page)
+            screenshot = (
+                self._capture_screenshot(f"pdf_page_{order_id}", page=pdf_page)
+                if self.settings.batch_capture_pdf_viewer_screenshot
+                else None
+            )
             pdf_path = self.paths.receipts_dir / f"{order_id}_{datetime.now():%Y%m%d}.pdf"
 
             logger.info(f"开始抓取 PDF 工件: {order_id}")
@@ -762,6 +785,9 @@ class SessionManager:
                 retryable=False,
             )
             return False
+        finally:
+            if pdf_page is not None:
+                self._close_pdf_popup(pdf_page)
 
     def process_order_result(self, order_id: str) -> ReceiptResult:
         self.current_receipt_result = None

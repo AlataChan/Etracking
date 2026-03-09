@@ -50,6 +50,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "batch": {
         "session_recycle_orders": 50,
         "session_retryable_failure_threshold": 5,
+        "resume_probe_timeout_seconds": 1.0,
+        "capture_pdf_viewer_screenshot": True,
     },
 }
 
@@ -180,6 +182,14 @@ class AppSettings:
     @property
     def batch_session_retryable_failure_threshold(self) -> int:
         return int(self.raw.get("batch", {}).get("session_retryable_failure_threshold", 5))
+
+    @property
+    def batch_resume_probe_timeout_seconds(self) -> float:
+        return float(self.raw.get("batch", {}).get("resume_probe_timeout_seconds", 1.0))
+
+    @property
+    def batch_capture_pdf_viewer_screenshot(self) -> bool:
+        return bool(self.raw.get("batch", {}).get("capture_pdf_viewer_screenshot", True))
 
 
 def load_settings(project_root: Path | None = None) -> AppSettings:

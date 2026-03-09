@@ -43,6 +43,7 @@ That model is acceptable for tens of orders. It is too fragile for 1000-order jo
 - coordination should remain correct when workers stop unexpectedly
 - operator workflow should stay simple enough for non-engineering daily use
 - future scale-out should not require redesigning the artifact layout
+- success-path diagnostic screenshots should be configurable because they are useful during debugging but expensive during sustained batch throughput
 
 ## Approaches Considered
 
@@ -153,6 +154,18 @@ Each machine runs one or more workers. Each worker:
 - recycles its browser session periodically
 
 Each worker should run only one active browser flow at a time. Concurrency comes from multiple workers across machines, not from threads inside one browser session.
+
+Within one worker session, the steady-state loop after the receipt form is already expanded should stay minimal:
+
+- fill the next order id
+- search
+- click print
+- wait only until the PDF/blob source is fetchable
+- persist the PDF
+- close the popup/viewer immediately if a new tab was opened
+- continue to the next order
+
+That loop should not re-run early setup steps on every item. Resume probes for pre-existing search results should be limited to the first order after attach or after a session recycle.
 
 #### 4. Shared Artifact Storage
 

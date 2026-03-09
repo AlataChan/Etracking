@@ -53,6 +53,7 @@ class FakePage:
         self.evaluate_result = evaluate_result
         self.url = url
         self.locators: dict[str, object] = {}
+        self.closed = False
 
     def evaluate(self, _script: str, _arg: object | None = None) -> object | None:
         return self.evaluate_result
@@ -62,6 +63,9 @@ class FakePage:
 
     def on(self, _event: str, _handler: object) -> None:
         return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeExpectPage:
@@ -130,7 +134,7 @@ def test_session_manager_uses_popup_page_for_pdf_capture(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         session,
-        "_wait_for_pdf_viewer_ready",
+        "_wait_for_pdf_capture_ready",
         lambda pdf_page: waited_pages.append(pdf_page.url),
     )
 
@@ -163,7 +167,7 @@ def test_session_manager_falls_back_when_popup_is_not_observed(monkeypatch) -> N
     )
     monkeypatch.setattr(
         session,
-        "_wait_for_pdf_viewer_ready",
+        "_wait_for_pdf_capture_ready",
         lambda pdf_page: waited_pages.append(pdf_page.url),
     )
 
@@ -172,3 +176,25 @@ def test_session_manager_falls_back_when_popup_is_not_observed(monkeypatch) -> N
     assert resolved is fallback_page
     assert clicked_orders == ["A017X680406306"]
     assert waited_pages == ["blob:https://e-tracking.customs.go.th/fallback"]
+
+
+def test_session_manager_closes_popup_page_after_pdf_capture() -> None:
+    session = SessionManager()
+    main_page = FakePage(url="https://e-tracking.customs.go.th/ERV/ERVQ1020")
+    popup_page = FakePage(url="blob:https://e-tracking.customs.go.th/receipt")
+    session.page = main_page  # type: ignore[assignment]
+
+    session._close_pdf_popup(popup_page)
+
+    assert popup_page.closed is True
+    assert main_page.closed is False
+
+
+def test_session_manager_keeps_main_page_open_when_pdf_page_is_main_page() -> None:
+    main_page = FakePage(url="https://e-tracking.customs.go.th/ERV/ERVQ1020")
+    session = SessionManager()
+    session.page = main_page  # type: ignore[assignment]
+
+    session._close_pdf_popup(main_page)
+
+    assert main_page.closed is False

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.config import load_settings, with_settings_overrides
 from src.core.models import ExecutionStatus, ReceiptResult
 from src.session_manager import BatchSessionProcessor, SessionManager
 
@@ -22,9 +23,16 @@ class FakeReceiptFlow:
 class FakePdfPage:
     def __init__(self, url: str) -> None:
         self.url = url
+        self.closed = False
 
     def screenshot(self, path: str, full_page: bool) -> None:
         Path(path).write_bytes(b"png")
+
+    def on(self, _event: str, _handler: object) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakePdfFlow:
@@ -126,6 +134,80 @@ def test_process_single_order_skips_printer_refill_when_resuming_from_expanded_p
     assert session.receipt_flow.input_calls == ["A017X680406306"]
     assert search_wait_calls["count"] == 1
     assert open_calls == ["A017X680406306"]
+
+
+def test_process_single_order_only_probes_existing_search_state_once_per_session(monkeypatch, tmp_path: Path) -> None:
+    session = SessionManager()
+    session.attached_over_cdp = True
+    session.resumed_from_expanded_form = True
+    session.page = FakePdfPage(url="https://e-tracking.customs.go.th/ERV/ERVQ1020")  # type: ignore[assignment]
+    session.receipt_flow = FakeReceiptFlow(input_calls=[])  # type: ignore[assignment]
+    session.pdf_flow = FakePdfFlow()  # type: ignore[assignment]
+
+    poll_calls = {"count": 0}
+    open_pages: list[FakePdfPage] = []
+    monkeypatch.setattr(
+        SessionManager,
+        "_poll_search_state",
+        lambda self, order_id, timeout_seconds=0: poll_calls.__setitem__("count", poll_calls["count"] + 1)
+        or {"match": None, "noResults": False, "loadingVisible": False},
+    )
+    monkeypatch.setattr(
+        SessionManager,
+        "_wait_for_search_results",
+        lambda self, order_id: None,
+    )
+    monkeypatch.setattr(
+        SessionManager,
+        "_capture_screenshot",
+        lambda self, name, page=None: str(tmp_path / f"{name}.png"),
+    )
+    monkeypatch.setattr(
+        SessionManager,
+        "_open_pdf_page_for_order",
+        lambda self, order_id: open_pages.append(FakePdfPage(url=f"blob:https://e-tracking.customs.go.th/{order_id}"))
+        or open_pages[-1],
+    )
+    monkeypatch.setattr(session.inspector, "snapshot", lambda current_url, screenshot_path=None: {"currentUrl": current_url})
+
+    first = session.process_single_order("A017X680406306")
+    second = session.process_single_order("A017X680406307")
+
+    assert first is True
+    assert second is True
+    assert poll_calls["count"] == 1
+    assert session.receipt_flow.input_calls == ["A017X680406306", "A017X680406307"]
+
+
+def test_process_single_order_can_skip_success_pdf_viewer_screenshot(monkeypatch, tmp_path: Path) -> None:
+    settings = with_settings_overrides(
+        load_settings(project_root=tmp_path),
+        {"batch": {"capture_pdf_viewer_screenshot": False}},
+    )
+    session = SessionManager(settings=settings)
+    session.attached_over_cdp = True
+    session.resumed_from_expanded_form = True
+    session.page = FakePdfPage(url="https://e-tracking.customs.go.th/ERV/ERVQ1020")  # type: ignore[assignment]
+    session.receipt_flow = FakeReceiptFlow(input_calls=[])  # type: ignore[assignment]
+    session.pdf_flow = FakePdfFlow()  # type: ignore[assignment]
+
+    capture_calls: list[str] = []
+    popup_page = FakePdfPage(url="blob:https://e-tracking.customs.go.th/receipt")
+    monkeypatch.setattr(SessionManager, "_poll_search_state", lambda self, order_id, timeout_seconds=0: {"match": None})
+    monkeypatch.setattr(SessionManager, "_wait_for_search_results", lambda self, order_id: None)
+    monkeypatch.setattr(SessionManager, "_open_pdf_page_for_order", lambda self, order_id: popup_page)
+    monkeypatch.setattr(
+        SessionManager,
+        "_capture_screenshot",
+        lambda self, name, page=None: capture_calls.append(name) or str(tmp_path / f"{name}.png"),
+    )
+    monkeypatch.setattr(session.inspector, "snapshot", lambda current_url, screenshot_path=None: {"currentUrl": current_url})
+
+    success = session.process_single_order("A017X680406306")
+
+    assert success is True
+    assert capture_calls == []
+    assert popup_page.closed is True
 
 
 def test_batch_session_processor_recycles_after_completed_order_threshold() -> None:

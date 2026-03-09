@@ -32,3 +32,9 @@ excel:
   sheet_name: null
   column: "F"
   skip_header: true
+
+batch:
+  session_recycle_orders: 50
+  session_retryable_failure_threshold: 5
+  resume_probe_timeout_seconds: 1.0
+  capture_pdf_viewer_screenshot: true
