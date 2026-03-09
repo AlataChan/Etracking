@@ -109,6 +109,7 @@ def test_process_single_order_skips_printer_refill_when_resuming_from_expanded_p
         "_observe_search_state",
         lambda self, order_id: {"match": None, "noResults": False, "loadingVisible": False},
     )
+    monkeypatch.setattr(SessionManager, "_receipt_form_expanded", lambda self: True)
     monkeypatch.setattr(
         SessionManager,
         "_fill_printer_info",
@@ -152,6 +153,7 @@ def test_process_single_order_only_probes_existing_search_state_once_per_session
         lambda self, order_id, timeout_seconds=0: poll_calls.__setitem__("count", poll_calls["count"] + 1)
         or {"match": None, "noResults": False, "loadingVisible": False},
     )
+    monkeypatch.setattr(SessionManager, "_receipt_form_expanded", lambda self: True)
     monkeypatch.setattr(
         SessionManager,
         "_wait_for_search_results",
@@ -194,6 +196,7 @@ def test_process_single_order_can_skip_success_pdf_viewer_screenshot(monkeypatch
     capture_calls: list[str] = []
     popup_page = FakePdfPage(url="blob:https://e-tracking.customs.go.th/receipt")
     monkeypatch.setattr(SessionManager, "_poll_search_state", lambda self, order_id, timeout_seconds=0: {"match": None})
+    monkeypatch.setattr(SessionManager, "_receipt_form_expanded", lambda self: True)
     monkeypatch.setattr(SessionManager, "_wait_for_search_results", lambda self, order_id: None)
     monkeypatch.setattr(SessionManager, "_open_pdf_page_for_order", lambda self, order_id: popup_page)
     monkeypatch.setattr(

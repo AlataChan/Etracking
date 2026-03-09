@@ -28,7 +28,7 @@ from src.core.models import ExecutionStatus, ReceiptResult
 from src.core.paths import RuntimePaths
 from src.excel_reader import ExcelReader
 from src.support.selectors import ReceiptSelectors
-from src.workflow.login_flow import LoginFlow
+from src.workflow.entry_flow import EntryFlow
 from src.workflow.pdf_flow import PdfFlow
 from src.workflow.receipt_flow import ReceiptFlow
 
@@ -129,7 +129,8 @@ class SessionManager:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.adapter: Optional[PlaywrightAdapter] = None
-        self.login_flow: Optional[LoginFlow] = None
+        self.entry_flow: Optional[EntryFlow] = None
+        self.login_flow: Optional[EntryFlow] = None
         self.receipt_flow: Optional[ReceiptFlow] = None
         self.inspector = DevToolsInspector()
         self.pdf_flow = PdfFlow(min_bytes=self.settings.min_pdf_bytes)
@@ -138,6 +139,8 @@ class SessionManager:
         self.attached_over_cdp = False
         self.resumed_from_expanded_form = False
         self.resume_search_probe_pending = True
+        self.printer_info_ready = False
+        self.popup_expect_timeout_ms = 2000
 
     def __enter__(self) -> "SessionManager":
         try:
@@ -146,7 +149,8 @@ class SessionManager:
             self._initialize_browser_session()
             self.inspector.attach(self.page)
             self.adapter = PlaywrightAdapter(self.page, self.paths.screenshots_dir)
-            self.login_flow = LoginFlow(adapter=self.adapter, selectors=self.selectors)
+            self.entry_flow = EntryFlow(adapter=self.adapter, selectors=self.selectors)
+            self.login_flow = self.entry_flow
             self.receipt_flow = ReceiptFlow(adapter=self.adapter, selectors=self.selectors)
 
             self._prepare_browser_session()
@@ -334,8 +338,10 @@ class SessionManager:
         self.browser = None
         self.playwright = None
         self.adapter = None
+        self.entry_flow = None
         self.login_flow = None
         self.receipt_flow = None
+        self.printer_info_ready = False
 
     def _retry_action(self, action: Callable[[], T], max_retries: int = 3, delay: float = 0.5) -> T:
         last_exception: Exception | None = None
@@ -383,17 +389,112 @@ class SessionManager:
 
     def _ensure_ready_for_receipt_search(self) -> None:
         assert self.page is not None
-        assert self.login_flow is not None
+        flow = self._get_entry_flow()
 
-        if self.page.query_selector(self.selectors.receipt_menu_items[0]):
-            self.login_flow.navigate_to_receipt_page()
-        elif self.page.query_selector(self.selectors.policy_accept_labels[0]):
-            self.login_flow.accept_policy()
-            self.login_flow.navigate_to_receipt_page()
-        elif self.page.query_selector(self.selectors.epayment_tiles[0]):
-            self.login_flow.navigate_to_receipt_page()
+        if self._receipt_page_ready() or self._receipt_form_expanded():
+            logger.info("页面已处于收据可操作状态，直接执行税号准备")
+            self._fill_tax_information()
+            return
 
+        if self._any_visible(self.selectors.policy_accept_labels, timeout_ms=250):
+            logger.info("检测到条款弹窗，执行接受流程")
+            flow.accept_policy()
+
+        if self._any_visible(self.selectors.epayment_tiles, timeout_ms=250):
+            logger.info("检测到 ETS 首页 e-payment 入口，执行 ERV 跳转")
+            self._handoff_to_erv_main()
+
+        if self._any_visible(self.selectors.receipt_menu_items, timeout_ms=250):
+            logger.info("检测到 ERV/MAIN 收据菜单，进入 ERVQ1020")
+            self._open_receipt_page_from_erv_main()
+
+        logger.info("开始执行税号和打印人前置准备")
         self._fill_tax_information()
+
+    def _get_entry_flow(self) -> EntryFlow:
+        flow = self.entry_flow or self.login_flow
+        assert flow is not None
+        return flow
+
+    def _handoff_to_erv_main(self) -> None:
+        assert self.page is not None
+
+        if self._erv_main_ready():
+            logger.info("当前已处于 ERV/MAIN 就绪态，跳过 e-payment handoff")
+            return
+
+        flow = self._get_entry_flow()
+        logger.info("首次点击 e-payment tile")
+        flow.click_epayment_tile()
+        if self._wait_for_erv_main_ready(timeout_seconds=1.5):
+            logger.info(f"首次点击后已到达 ERV/MAIN: {self.page.url}")
+            return
+
+        logger.info("首次点击未完成跳转，执行第二次点击")
+        flow.click_epayment_tile()
+        if self._wait_for_erv_main_ready(timeout_seconds=1.5):
+            logger.info(f"第二次点击后已到达 ERV/MAIN: {self.page.url}")
+            return
+
+        logger.info("双击仍未完成跳转，尝试调用 toPageERV()")
+        invoked = self.page.evaluate(
+            """() => {
+                if (typeof toPageERV === 'function') {
+                    toPageERV();
+                    return true;
+                }
+                return false;
+            }"""
+        )
+        if invoked and self._wait_for_erv_main_ready(timeout_seconds=2.5):
+            logger.info(f"toPageERV() 调用后已到达 ERV/MAIN: {self.page.url}")
+            return
+
+        raise LookupError("Unable to reach ERV/MAIN from ETS home page")
+
+    def _wait_for_erv_main_ready(self, timeout_seconds: float) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._erv_main_ready():
+                return True
+            time.sleep(0.25)
+        return self._erv_main_ready()
+
+    def _erv_main_ready(self) -> bool:
+        assert self.page is not None
+
+        return "/ERV/MAIN" in self.page.url or self._any_visible(self.selectors.receipt_menu_items, timeout_ms=250)
+
+    def _open_receipt_page_from_erv_main(self) -> None:
+        if self._ervq1020_ready():
+            logger.info("当前已处于 ERVQ1020 就绪态，跳过菜单跳转")
+            return
+
+        logger.info("点击 ERV/MAIN 左侧收据菜单")
+        self._get_entry_flow().open_receipt_menu()
+        if self._wait_for_ervq1020_ready(timeout_seconds=3.0):
+            logger.info("已到达 ERVQ1020")
+            return
+
+        raise LookupError("Unable to reach ERVQ1020 from ERV/MAIN receipt menu")
+
+    def _wait_for_ervq1020_ready(self, timeout_seconds: float) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._ervq1020_ready():
+                return True
+            time.sleep(0.25)
+        return self._ervq1020_ready()
+
+    def _ervq1020_ready(self) -> bool:
+        assert self.page is not None
+
+        return (
+            "/ERV/ERVQ1020" in self.page.url
+            or self._any_visible(self.selectors.tax_id_inputs, timeout_ms=250)
+            or self._receipt_page_ready()
+            or self._receipt_form_expanded()
+        )
 
     def _wait_for_first_visible(
         self,
@@ -401,12 +502,13 @@ class SessionManager:
         timeout_ms: int | None = None,
     ) -> str:
         assert self.page is not None
+        per_selector_timeout = timeout_ms if timeout_ms is not None else min(self.settings.browser_timeout_ms, 1500)
         last_error: Exception | None = None
         for selector in candidates:
             try:
                 self.page.wait_for_selector(
                     selector,
-                    timeout=timeout_ms or self.settings.browser_timeout_ms,
+                    timeout=per_selector_timeout,
                     state="visible",
                 )
                 return selector
@@ -451,10 +553,18 @@ class SessionManager:
             return
 
         try:
+            logger.info("选择税号验证前的两个角色选项")
+            self._get_entry_flow().select_taxpayer_roles()
+            logger.info("填写税号")
             self._fill_first_visible(self.selectors.tax_id_inputs, self.settings.tax_id)
+            logger.info("填写分支号")
             self._fill_first_visible(self.selectors.branch_id_inputs, self.settings.branch_id)
+            logger.info("首次点击税号验证按钮")
             self._click_first_visible(self.selectors.taxpayer_validate_buttons)
-            time.sleep(1)
+            if not self._wait_for_receipt_form_expanded(timeout_seconds=3.0):
+                logger.info("首轮验证后未展开，执行第二次验证点击")
+                self._click_first_visible(self.selectors.taxpayer_validate_buttons)
+                self._wait_for_receipt_form_expanded(timeout_seconds=4.0)
         except Exception as error:
             screenshot = self._capture_screenshot("taxpayer_info_error")
             logger.warning(f"填充纳税人信息失败，将继续流程: {error}")
@@ -466,6 +576,14 @@ class SessionManager:
                 retryable=False,
             )
 
+    def _wait_for_receipt_form_expanded(self, timeout_seconds: float) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._receipt_form_expanded():
+                return True
+            time.sleep(0.25)
+        return self._receipt_form_expanded()
+
     def _fill_printer_info(self) -> None:
         assert self.page is not None
 
@@ -476,12 +594,34 @@ class SessionManager:
             logger.info("填写打印人手机号")
             self._fill_first_visible(self.selectors.printer_phone_inputs, self.settings.printer_phone_number)
 
-    def _resolve_pdf_page(self) -> Page:
+    def _ensure_printer_info_ready(self) -> None:
+        form_expanded = self._receipt_form_expanded()
+        if self.printer_info_ready and form_expanded:
+            logger.info("打印人信息已就绪，跳过重复填充")
+            return
+        if self.resumed_from_expanded_form and form_expanded:
+            logger.info("当前为预展开恢复页面，跳过打印人信息重填")
+            self.printer_info_ready = True
+            self.resumed_from_expanded_form = False
+            return
+
+        self._fill_printer_info()
+        self.printer_info_ready = True
+        self.resumed_from_expanded_form = False
+
+    def _resolve_pdf_page(
+        self,
+        *,
+        original_pages: list[Page] | None = None,
+        original_url: str | None = None,
+    ) -> Page:
         assert self.page is not None
         assert self.context is not None
 
-        original_url = self.page.url
-        original_pages = list(self.context.pages)
+        if original_url is None:
+            original_url = self.page.url
+        if original_pages is None:
+            original_pages = list(self.context.pages)
         deadline = time.time() + 20
 
         while time.time() < deadline:
@@ -491,7 +631,7 @@ class SessionManager:
             current_url = self.page.url
             if current_url != original_url and ("blob:" in current_url or "pdf" in current_url.lower()):
                 return self.page
-            time.sleep(0.5)
+            time.sleep(0.25)
 
         return self.page
 
@@ -631,14 +771,19 @@ class SessionManager:
 
     def _open_pdf_page_for_order(self, order_id: str) -> Page:
         assert self.context is not None
+        original_pages = list(self.context.pages)
+        original_url = self.page.url if self.page is not None else None
 
         try:
-            with self.context.expect_page(timeout=15000) as popup_info:
+            with self.context.expect_page(timeout=self.popup_expect_timeout_ms) as popup_info:
                 self._click_print_icon_for_order(order_id)
             pdf_page = popup_info.value
         except PlaywrightTimeoutError:
-            logger.info(f"未观察到订单 {order_id} 的 popup，回退到现有页面解析")
-            pdf_page = self._resolve_pdf_page()
+            logger.info(f"短窗口内未观察到订单 {order_id} 的 popup，回退到现有页面解析")
+            pdf_page = self._resolve_pdf_page(
+                original_pages=original_pages,
+                original_url=original_url,
+            )
 
         if pdf_page is not self.page:
             self.inspector.attach(pdf_page)
@@ -748,10 +893,7 @@ class SessionManager:
             if existing_state.get("match"):
                 logger.info(f"附加页面已存在订单结果行，直接进入打印步骤: {order_id}")
             else:
-                if self.resumed_from_expanded_form:
-                    logger.info("当前为预展开恢复页面，跳过打印人信息重填")
-                else:
-                    self._fill_printer_info()
+                self._ensure_printer_info_ready()
                 logger.info(f"填写订单号: {order_id}")
                 self.receipt_flow.input_order_id(order_id)
                 logger.info(f"等待搜索结果: {order_id}")

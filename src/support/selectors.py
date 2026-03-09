@@ -10,15 +10,27 @@ class ReceiptSelectors:
     policy_confirm_buttons: tuple[str, ...] = ("button#UPDETL0050",)
     epayment_tiles: tuple[str, ...] = ("img#ePayImg",)
     receipt_menu_items: tuple[str, ...] = ("span:has-text('พิมพ์ใบเสร็จรับเงิน')",)
+    taxpayer_delegate_options: tuple[str, ...] = (
+        "label:has-text('กระทำการแทน (สำหรับนิติบุคคล)')",
+        "span:has-text('กระทำการแทน (สำหรับนิติบุคคล)')",
+        "xpath=//*[contains(normalize-space(.), 'กระทำการแทน (สำหรับนิติบุคคล)')]",
+    )
+    taxpayer_importer_exporter_options: tuple[str, ...] = (
+        "label:has-text('ผู้นำของเข้า/ผู้ส่งของออก')",
+        "span:has-text('ผู้นำของเข้า/ผู้ส่งของออก')",
+        "xpath=//*[contains(normalize-space(.), 'ผู้นำของเข้า/ผู้ส่งของออก')]",
+    )
     tax_id_inputs: tuple[str, ...] = (
         "input[name='taxId']",
         "input[aria-label='Tax ID']",
         "input[placeholder*='เลขประจำตัวผู้เสียภาษี']",
+        "xpath=(//input[not(@type='hidden') and (not(@type) or @type='text')])[1]",
     )
     branch_id_inputs: tuple[str, ...] = (
         "input[name='branchId']",
         "input[aria-label='Branch ID']",
         "input[placeholder*='สาขา']",
+        "xpath=(//input[not(@type='hidden') and (not(@type) or @type='text')])[2]",
     )
     taxpayer_validate_buttons: tuple[str, ...] = (
         "button[data-testid='validate-taxpayer']",
@@ -69,6 +81,8 @@ class ReceiptSelectors:
             *self.policy_confirm_buttons,
             *self.epayment_tiles,
             *self.receipt_menu_items,
+            *self.taxpayer_delegate_options,
+            *self.taxpayer_importer_exporter_options,
             *self.tax_id_inputs,
             *self.branch_id_inputs,
             *self.taxpayer_validate_buttons,

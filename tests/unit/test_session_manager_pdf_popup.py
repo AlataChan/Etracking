@@ -69,7 +69,14 @@ class FakePage:
 
 
 class FakeExpectPage:
-    def __init__(self, popup_page: FakePage | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        context: "FakeContext",
+        popup_page: FakePage | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.context = context
         self.popup_page = popup_page
         self.error = error
         self.value: FakePage | None = None
@@ -79,19 +86,33 @@ class FakeExpectPage:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         if self.error is not None:
+            if self.context.pages_after_error is not None:
+                self.context.pages = list(self.context.pages_after_error)
             raise self.error
         self.value = self.popup_page
 
 
 class FakeContext:
-    def __init__(self, popup_page: FakePage | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        popup_page: FakePage | None = None,
+        error: Exception | None = None,
+        pages: list[FakePage] | None = None,
+        pages_after_error: list[FakePage] | None = None,
+    ) -> None:
         self.popup_page = popup_page
         self.error = error
         self.timeout_ms: int | None = None
+        self.pages = pages or []
+        self.pages_after_error = pages_after_error
 
     def expect_page(self, timeout: int) -> FakeExpectPage:
         self.timeout_ms = timeout
-        return FakeExpectPage(popup_page=self.popup_page, error=self.error)
+        return FakeExpectPage(
+            context=self,
+            popup_page=self.popup_page,
+            error=self.error,
+        )
 
 
 def test_session_manager_clicks_rightmost_print_icon_in_matching_row() -> None:
@@ -143,7 +164,7 @@ def test_session_manager_uses_popup_page_for_pdf_capture(monkeypatch) -> None:
     assert resolved is popup_page
     assert clicked_orders == ["A017X680406306"]
     assert waited_pages == ["blob:https://e-tracking.customs.go.th/receipt"]
-    assert context.timeout_ms == 15000
+    assert context.timeout_ms == 2000
 
 
 def test_session_manager_falls_back_when_popup_is_not_observed(monkeypatch) -> None:
@@ -163,7 +184,7 @@ def test_session_manager_falls_back_when_popup_is_not_observed(monkeypatch) -> N
     monkeypatch.setattr(
         session,
         "_resolve_pdf_page",
-        lambda: fallback_page,
+        lambda **_: fallback_page,
     )
     monkeypatch.setattr(
         session,
@@ -176,6 +197,38 @@ def test_session_manager_falls_back_when_popup_is_not_observed(monkeypatch) -> N
     assert resolved is fallback_page
     assert clicked_orders == ["A017X680406306"]
     assert waited_pages == ["blob:https://e-tracking.customs.go.th/fallback"]
+
+
+def test_session_manager_uses_late_popup_page_seen_after_expect_timeout(monkeypatch) -> None:
+    main_page = FakePage(url="https://e-tracking.customs.go.th/ERV/ERVQ1020")
+    late_popup_page = FakePage(url="blob:https://e-tracking.customs.go.th/late-popup")
+    context = FakeContext(
+        error=PlaywrightTimeoutError("timeout"),
+        pages=[main_page],
+        pages_after_error=[main_page, late_popup_page],
+    )
+    session = SessionManager()
+    session.context = context  # type: ignore[assignment]
+    session.page = main_page  # type: ignore[assignment]
+
+    clicked_orders: list[str] = []
+    waited_pages: list[str] = []
+    monkeypatch.setattr(
+        session,
+        "_click_print_icon_for_order",
+        lambda order_id: clicked_orders.append(order_id),
+    )
+    monkeypatch.setattr(
+        session,
+        "_wait_for_pdf_capture_ready",
+        lambda pdf_page: waited_pages.append(pdf_page.url),
+    )
+
+    resolved = session._open_pdf_page_for_order("A017X680406306")
+
+    assert resolved is late_popup_page
+    assert clicked_orders == ["A017X680406306"]
+    assert waited_pages == ["blob:https://e-tracking.customs.go.th/late-popup"]
 
 
 def test_session_manager_closes_popup_page_after_pdf_capture() -> None:
