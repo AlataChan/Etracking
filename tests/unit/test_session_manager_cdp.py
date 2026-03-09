@@ -193,6 +193,21 @@ def test_session_manager_prefers_non_blob_business_page_when_attached_over_cdp(
         assert session.page is receipt_page
 
 
+def test_session_manager_ignores_browser_internal_pages_when_attached_over_cdp(tmp_path: Path) -> None:
+    omnibox_page = FakePage(url="chrome://omnibox-popup.top-chrome/")
+    newtab_page = FakePage(url="chrome://newtab/")
+    existing_context = FakeContext(pages=[omnibox_page, newtab_page])
+
+    session = SessionManager(settings=build_settings(tmp_path), paths=RuntimePaths.from_settings(build_settings(tmp_path)).ensure())
+    session.browser = FakeBrowser(contexts=[existing_context])  # type: ignore[assignment]
+
+    context, page = session._resolve_attached_context_page()
+
+    assert context is existing_context
+    assert page is existing_context.pages[-1]
+    assert page.url == "about:blank"
+
+
 def test_session_manager_cleans_up_playwright_when_enter_fails(monkeypatch) -> None:
     def fail_connect(self: SessionManager) -> FakeBrowser:
         raise RuntimeError("boom")
@@ -262,3 +277,18 @@ def test_session_manager_marks_resumed_expanded_form_when_attached_page_is_alrea
     session._prepare_browser_session()
 
     assert session.resumed_from_expanded_form is True
+
+
+def test_session_manager_opens_login_url_from_browser_internal_page(monkeypatch) -> None:
+    session = SessionManager()
+    session.attached_over_cdp = True
+    session.page = FakePage(url="chrome://omnibox-popup.top-chrome/")  # type: ignore[assignment]
+    session.adapter = FakeAdapter()  # type: ignore[assignment]
+    session.login_flow = FakeLoginFlow()  # type: ignore[assignment]
+
+    monkeypatch.setattr(SessionManager, "_receipt_page_ready", lambda self: False)
+    monkeypatch.setattr(SessionManager, "_ensure_ready_for_receipt_search", lambda self: None)
+
+    session._prepare_browser_session()
+
+    assert session.adapter.goto_calls == [session.settings.login_url]

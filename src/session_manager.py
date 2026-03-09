@@ -205,7 +205,7 @@ class SessionManager:
                     return context, page
                 if preferred_app_match is None and self._matches_app_host(current_url):
                     preferred_app_match = (context, page)
-                if preferred_match is None and current_url not in ("", "about:blank"):
+                if preferred_match is None and self._is_reusable_attached_page(current_url):
                     preferred_match = (context, page)
 
         if preferred_app_match is not None:
@@ -243,6 +243,9 @@ class SessionManager:
             if self.page.url in ("", "about:blank"):
                 logger.info(f"附加页面为空，打开目标网址: {self.settings.login_url}")
                 self.adapter.goto(self.settings.login_url)
+            elif self._is_browser_internal_url(self.page.url):
+                logger.info(f"附加页面为浏览器内部页面，打开目标网址: {self.settings.login_url}")
+                self.adapter.goto(self.settings.login_url)
             else:
                 logger.info(f"附加页面尚未就绪，尝试从当前页面继续: {self.page.url}")
 
@@ -256,6 +259,23 @@ class SessionManager:
     def _matches_app_host(self, url: str) -> bool:
         host = urlparse(self.settings.login_url).netloc
         return bool(host and host in url)
+
+    def _is_browser_internal_url(self, url: str) -> bool:
+        lowered = url.lower()
+        return lowered.startswith(
+            (
+                "chrome://",
+                "chrome-untrusted://",
+                "devtools://",
+                "edge://",
+                "about:",
+                "view-source:",
+                "extension://",
+            )
+        )
+
+    def _is_reusable_attached_page(self, url: str) -> bool:
+        return bool(url and url != "about:blank" and not self._is_browser_internal_url(url))
 
     def _is_pdf_like_url(self, url: str) -> bool:
         lowered = url.lower()
