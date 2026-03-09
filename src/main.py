@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
+import signal
 import sys
 import time
 from pathlib import Path
@@ -14,11 +16,35 @@ from loguru import logger
 from src.core.config import AppSettings, load_settings, with_settings_overrides
 from src.core.models import BatchRunResult, ExecutionStatus, ReceiptJob, ReceiptResult
 from src.core.paths import RuntimePaths
-from src.core.results import load_results_jsonl
+from src.core.results import build_run_id, latest_results_by_order, load_results_jsonl, run_id_from_results_path
+from src.integrations.run_ledger import RunLedger
 from src.integrations.report_writer import ReportWriter
-from src.session_manager import SessionManager
+from src.session_manager import BatchSessionProcessor, SessionManager
 from src.support.logging import setup_logger
 from src.workflow.batch_runner import BatchRunner
+
+
+class _StopController:
+    def __init__(self) -> None:
+        self.stop_requested = False
+        self._previous_handlers: dict[int, object] = {}
+
+    def install(self) -> None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            self._previous_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, self._handle_signal)
+
+    def restore(self) -> None:
+        for sig, handler in self._previous_handlers.items():
+            signal.signal(sig, handler)
+        self._previous_handlers.clear()
+
+    def should_stop(self) -> bool:
+        return self.stop_requested
+
+    def _handle_signal(self, signum, frame) -> None:  # type: ignore[no-untyped-def]
+        logger.warning(f"收到停止信号 {signum}，当前订单完成后停止批处理")
+        self.stop_requested = True
 
 
 def build_paths(
@@ -65,6 +91,7 @@ def process_single_order(
 def process_batch_orders(
     excel_path: str | Path | None = None,
     sheet_name: str | None = None,
+    resume_results_path: str | Path | None = None,
     use_saved_state: bool = True,
     settings: AppSettings | None = None,
     paths: RuntimePaths | None = None,
@@ -72,26 +99,69 @@ def process_batch_orders(
     resolved_settings = settings or load_settings()
     resolved_paths = paths or build_paths(resolved_settings)
     start_time = time.time()
+    started_at = datetime.now(UTC)
     logger.info("\n===== 开始批量处理订单 =====")
 
+    runner = BatchRunner()
+    resume_path = Path(resume_results_path) if resume_results_path else None
+    run_id = run_id_from_results_path(resume_path) if resume_path else None
     job = ReceiptJob(
         order_ids=[],
         excel_path=Path(excel_path) if excel_path else resolved_settings.excel_path,
         sheet_name=sheet_name or resolved_settings.excel_sheet_name,
         use_saved_state=use_saved_state,
         output_dir=resolved_paths.receipts_dir,
+        run_id=run_id,
         max_retries=resolved_settings.max_retries,
+        min_artifact_bytes=resolved_settings.min_pdf_bytes,
+        resume_results_path=resume_path,
     )
+    job.order_ids = runner.load_order_ids(job)
+    if not job.run_id:
+        job.run_id = build_run_id(started_at)
 
-    runner = BatchRunner()
     writer = ReportWriter(resolved_paths)
-
-    with SessionManager(
+    previous_results = load_results_jsonl(resume_path) if resume_path else []
+    effective_results = latest_results_by_order(previous_results)
+    ledger = RunLedger(resolved_paths.report_paths_for(job.run_id))
+    stop_controller = _StopController()
+    stop_controller.install()
+    processor = BatchSessionProcessor(
         use_saved_state=use_saved_state,
         settings=resolved_settings,
         paths=resolved_paths,
-    ) as session:
-        report = runner.run(job=job, process_order=session.process_order_result)
+    )
+
+    def snapshot_report(finished_at: datetime | None = None) -> BatchRunResult:
+        ordered_results = [effective_results[order_id] for order_id in job.order_ids if order_id in effective_results]
+        return BatchRunResult(
+            job=job,
+            run_id=job.run_id or "",
+            results=ordered_results,
+            started_at=started_at,
+            finished_at=finished_at,
+            planned_total=len(job.order_ids),
+            stopped_early=stop_controller.should_stop(),
+        )
+
+    def on_result(result: ReceiptResult) -> None:
+        effective_results[result.order_id] = result
+        ledger.append_result(result)
+        ledger.write_summary_snapshot(snapshot_report())
+
+    ledger.write_summary_snapshot(snapshot_report())
+
+    try:
+        report = runner.run(
+            job=job,
+            process_order=processor.process_order_result,
+            previous_results=previous_results,
+            on_result=on_result,
+            should_stop=stop_controller.should_stop,
+        )
+    finally:
+        processor.close()
+        stop_controller.restore()
 
     report = writer.write(report)
     elapsed = time.time() - start_time
@@ -153,6 +223,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="从之前的 results.jsonl 只重跑失败订单",
     )
     parser.add_argument(
+        "--resume-results",
+        type=str,
+        help="从已有 results.jsonl 恢复整批任务，成功且工件有效的订单将被跳过",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         help="运行期输出目录，默认使用配置中的 runtime/receipts",
@@ -199,6 +274,7 @@ def main() -> None:
         report = process_batch_orders(
             excel_path=args.excel,
             sheet_name=args.sheet,
+            resume_results_path=args.resume_results,
             use_saved_state=use_saved_state,
             settings=settings,
             paths=paths,

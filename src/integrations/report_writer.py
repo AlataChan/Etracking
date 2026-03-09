@@ -12,22 +12,18 @@ class ReportWriter:
         self.paths = paths
 
     def write(self, report: BatchRunResult) -> BatchRunResult:
-        report_dir = self.paths.report_dir_for(report.run_id)
-        report_dir.mkdir(parents=True, exist_ok=True)
+        report_paths = self.paths.report_paths_for(report.run_id)
+        report_paths.report_dir.mkdir(parents=True, exist_ok=True)
 
-        summary_path = report_dir / "summary.json"
-        results_path = report_dir / "results.jsonl"
-        csv_path = report_dir / "results.csv"
-
-        summary_path.write_text(
+        report_paths.summary_path.write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        with results_path.open("w", encoding="utf-8") as handle:
+        with report_paths.results_path.open("w", encoding="utf-8") as handle:
             for result in report.results:
                 handle.write(json.dumps(result.to_dict(), ensure_ascii=False))
                 handle.write("\n")
-        with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        with report_paths.csv_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(
                 handle,
                 fieldnames=["orderId", "status", "reason", "attempts", "artifactPath", "screenshotPath"],
@@ -45,8 +41,8 @@ class ReportWriter:
                     }
                 )
 
-        report.report_dir = report_dir
-        report.summary_path = summary_path
-        report.results_path = results_path
-        report.csv_path = csv_path
+        report.report_dir = report_paths.report_dir
+        report.summary_path = report_paths.summary_path
+        report.results_path = report_paths.results_path
+        report.csv_path = report_paths.csv_path
         return report

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.core.models import ExecutionStatus, ReceiptResult
-from src.session_manager import SessionManager
+from src.session_manager import BatchSessionProcessor, SessionManager
 
 
 @dataclass
@@ -30,6 +30,23 @@ class FakePdfPage:
 class FakePdfFlow:
     def acquire(self, **kwargs) -> ReceiptResult:
         return ReceiptResult(order_id="A017X680406306", status=ExecutionStatus.SUCCEEDED, metadata={})
+
+
+class FakeSessionContext:
+    def __init__(self, results: list[ReceiptResult]) -> None:
+        self.results = list(results)
+        self.processed_orders: list[str] = []
+        self.closed = False
+
+    def __enter__(self) -> "FakeSessionContext":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.closed = True
+
+    def process_order_result(self, order_id: str) -> ReceiptResult:
+        self.processed_orders.append(order_id)
+        return self.results.pop(0)
 
 
 def test_process_single_order_skips_refill_and_search_when_result_row_already_exists(monkeypatch, tmp_path: Path) -> None:
@@ -109,3 +126,80 @@ def test_process_single_order_skips_printer_refill_when_resuming_from_expanded_p
     assert session.receipt_flow.input_calls == ["A017X680406306"]
     assert search_wait_calls["count"] == 1
     assert open_calls == ["A017X680406306"]
+
+
+def test_batch_session_processor_recycles_after_completed_order_threshold() -> None:
+    sessions: list[FakeSessionContext] = []
+    session_results = [
+        [
+            ReceiptResult(order_id="A017X680406286", status=ExecutionStatus.SUCCEEDED),
+            ReceiptResult(order_id="A017X680406287", status=ExecutionStatus.SUCCEEDED),
+        ],
+        [
+            ReceiptResult(order_id="A017X680406288", status=ExecutionStatus.SUCCEEDED),
+        ],
+    ]
+
+    def factory(**kwargs) -> FakeSessionContext:
+        session = FakeSessionContext(session_results[len(sessions)])
+        sessions.append(session)
+        return session
+
+    processor = BatchSessionProcessor(
+        session_factory=factory,
+        recycle_every_orders=2,
+        recycle_after_retryable_failures=5,
+    )
+
+    processor.process_order_result("A017X680406286")
+    processor.process_order_result("A017X680406287")
+    processor.process_order_result("A017X680406288")
+    processor.close()
+
+    assert len(sessions) == 2
+    assert sessions[0].processed_orders == ["A017X680406286", "A017X680406287"]
+    assert sessions[1].processed_orders == ["A017X680406288"]
+    assert sessions[0].closed is True
+    assert sessions[1].closed is True
+
+
+def test_batch_session_processor_recycles_after_retryable_failures() -> None:
+    sessions: list[FakeSessionContext] = []
+    session_results = [
+        [
+            ReceiptResult(
+                order_id="A017X680406286",
+                status=ExecutionStatus.FAILED,
+                metadata={"retryable": True},
+            ),
+            ReceiptResult(
+                order_id="A017X680406287",
+                status=ExecutionStatus.FAILED,
+                metadata={"retryable": True},
+            ),
+        ],
+        [
+            ReceiptResult(order_id="A017X680406288", status=ExecutionStatus.SUCCEEDED),
+        ],
+    ]
+
+    def factory(**kwargs) -> FakeSessionContext:
+        session = FakeSessionContext(session_results[len(sessions)])
+        sessions.append(session)
+        return session
+
+    processor = BatchSessionProcessor(
+        session_factory=factory,
+        recycle_every_orders=50,
+        recycle_after_retryable_failures=2,
+    )
+
+    processor.process_order_result("A017X680406286")
+    processor.process_order_result("A017X680406287")
+    processor.process_order_result("A017X680406288")
+    processor.close()
+
+    assert len(sessions) == 2
+    assert sessions[0].processed_orders == ["A017X680406286", "A017X680406287"]
+    assert sessions[1].processed_orders == ["A017X680406288"]
+    assert sessions[0].closed is True

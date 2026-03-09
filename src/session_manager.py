@@ -35,6 +35,85 @@ from src.workflow.receipt_flow import ReceiptFlow
 T = TypeVar("T")
 
 
+class BatchSessionProcessor:
+    def __init__(
+        self,
+        use_saved_state: bool = True,
+        settings: Optional[AppSettings] = None,
+        paths: Optional[RuntimePaths] = None,
+        session_factory: Callable[..., Any] | None = None,
+        recycle_every_orders: int | None = None,
+        recycle_after_retryable_failures: int | None = None,
+    ) -> None:
+        self.use_saved_state = use_saved_state
+        self.settings = settings or load_settings()
+        self.paths = (paths or RuntimePaths.from_settings(self.settings)).ensure()
+        self.session_factory = session_factory or SessionManager
+        self.recycle_every_orders = (
+            self.settings.batch_session_recycle_orders if recycle_every_orders is None else recycle_every_orders
+        )
+        self.recycle_after_retryable_failures = (
+            self.settings.batch_session_retryable_failure_threshold
+            if recycle_after_retryable_failures is None
+            else recycle_after_retryable_failures
+        )
+        self._session_context: Any | None = None
+        self._session: Any | None = None
+        self._completed_since_recycle = 0
+        self._consecutive_retryable_failures = 0
+
+    def process_order_result(self, order_id: str) -> ReceiptResult:
+        if self._should_recycle_before_next_order():
+            self._recycle_session()
+        session = self._ensure_session()
+        result = session.process_order_result(order_id)
+        self._completed_since_recycle += 1
+        if result.status is ExecutionStatus.FAILED and bool(result.metadata.get("retryable")):
+            self._consecutive_retryable_failures += 1
+        else:
+            self._consecutive_retryable_failures = 0
+        return result
+
+    def close(self) -> None:
+        self._recycle_session()
+
+    def _ensure_session(self) -> Any:
+        if self._session is None:
+            self._open_session()
+        return self._session
+
+    def _open_session(self) -> None:
+        self._session_context = self.session_factory(
+            use_saved_state=self.use_saved_state,
+            settings=self.settings,
+            paths=self.paths,
+        )
+        self._session = self._session_context.__enter__()
+        self._completed_since_recycle = 0
+        self._consecutive_retryable_failures = 0
+
+    def _recycle_session(self) -> None:
+        if self._session_context is None:
+            return
+        self._session_context.__exit__(None, None, None)
+        self._session_context = None
+        self._session = None
+        self._completed_since_recycle = 0
+        self._consecutive_retryable_failures = 0
+
+    def _should_recycle_before_next_order(self) -> bool:
+        if self._session is None:
+            return False
+        if self.recycle_every_orders > 0 and self._completed_since_recycle >= self.recycle_every_orders:
+            return True
+        if (
+            self.recycle_after_retryable_failures > 0
+            and self._consecutive_retryable_failures >= self.recycle_after_retryable_failures
+        ):
+            return True
+        return False
+
+
 class SessionManager:
     def __init__(
         self,

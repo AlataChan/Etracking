@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.core.models import BatchRunResult, ExecutionStatus, ReceiptJob, ReceiptResult
-from src.core.results import build_run_id
+from src.core.results import build_run_id, latest_results_by_order, result_has_valid_artifact
 from src.excel_reader import ExcelReader
 
 
@@ -24,19 +24,35 @@ class BatchRunner:
         self,
         job: ReceiptJob,
         process_order: Callable[[str], ReceiptResult | bool],
+        previous_results: list[ReceiptResult] | None = None,
+        on_result: Callable[[ReceiptResult], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> BatchRunResult:
         started_at = datetime.now(UTC)
         run_id = job.run_id or build_run_id(started_at)
         order_ids = self.load_order_ids(job)
-        results: list[ReceiptResult] = []
+        results_by_order = latest_results_by_order(previous_results or [])
+        stopped_early = False
 
         for order_id in order_ids:
+            if should_stop and should_stop():
+                stopped_early = True
+                break
+
+            previous = results_by_order.get(order_id)
+            if previous and self._should_skip_previous_result(previous, job.min_artifact_bytes):
+                continue
+
             result = self._run_single_order(
                 order_id=order_id,
                 process_order=process_order,
                 max_attempts=max(1, job.max_retries),
             )
-            results.append(result)
+            results_by_order[order_id] = result
+            if on_result is not None:
+                on_result(result)
+
+        results = [results_by_order[order_id] for order_id in order_ids if order_id in results_by_order]
 
         return BatchRunResult(
             job=ReceiptJob(
@@ -47,11 +63,15 @@ class BatchRunner:
                 output_dir=Path(job.output_dir) if job.output_dir else None,
                 run_id=run_id,
                 max_retries=job.max_retries,
+                min_artifact_bytes=job.min_artifact_bytes,
+                resume_results_path=Path(job.resume_results_path) if job.resume_results_path else None,
             ),
             run_id=run_id,
             results=results,
             started_at=started_at,
             finished_at=datetime.now(UTC),
+            planned_total=len(order_ids),
+            stopped_early=stopped_early,
         )
 
     def _run_single_order(
@@ -89,6 +109,9 @@ class BatchRunner:
                 reason="no execution result produced",
             )
         return latest_result
+
+    def _should_skip_previous_result(self, result: ReceiptResult, min_artifact_bytes: int) -> bool:
+        return result_has_valid_artifact(result, min_bytes=min_artifact_bytes)
 
     def retry_failed_job(
         self,

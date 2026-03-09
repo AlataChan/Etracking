@@ -43,6 +43,8 @@ class ReceiptJob:
     output_dir: Path | None = None
     run_id: str | None = None
     max_retries: int = 1
+    min_artifact_bytes: int = 1
+    resume_results_path: Path | None = None
 
 
 @dataclass(slots=True)
@@ -76,7 +78,9 @@ class BatchRunResult:
     run_id: str
     results: list[ReceiptResult]
     started_at: datetime
-    finished_at: datetime
+    finished_at: datetime | None
+    planned_total: int | None = None
+    stopped_early: bool = False
     report_dir: Path | None = None
     summary_path: Path | None = None
     results_path: Path | None = None
@@ -84,7 +88,15 @@ class BatchRunResult:
 
     @property
     def total(self) -> int:
+        return self.planned_total if self.planned_total is not None else len(self.results)
+
+    @property
+    def completed(self) -> int:
         return len(self.results)
+
+    @property
+    def remaining(self) -> int:
+        return max(self.total - self.completed, 0)
 
     @property
     def succeeded(self) -> int:
@@ -112,8 +124,11 @@ class BatchRunResult:
             "failed": self.failed,
             "needsHumanReview": self.needs_human_review,
             "total": self.total,
+            "completed": self.completed,
+            "remaining": self.remaining,
             "startedAt": self.started_at.isoformat(),
-            "finishedAt": self.finished_at.isoformat(),
+            "finishedAt": self.finished_at.isoformat() if self.finished_at else None,
+            "stoppedEarly": self.stopped_early,
             "artifacts": [
                 str(result.artifact.path)
                 for result in self.results

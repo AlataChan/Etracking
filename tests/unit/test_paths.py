@@ -7,6 +7,8 @@ from src.core.paths import RuntimePaths
 def test_runtime_paths_are_scoped_under_runtime(tmp_path: Path) -> None:
     paths = RuntimePaths.from_project_root(tmp_path)
     paths.ensure()
+    report_paths = paths.report_paths_for("job_20260309_120000")
+    report_paths.report_dir.mkdir(parents=True, exist_ok=True)
 
     assert paths.runtime_dir == tmp_path / "runtime"
     assert paths.logs_dir == tmp_path / "runtime" / "logs"
@@ -14,6 +16,10 @@ def test_runtime_paths_are_scoped_under_runtime(tmp_path: Path) -> None:
     assert paths.reports_dir == tmp_path / "runtime" / "reports"
     assert paths.session_state_file == tmp_path / "runtime" / "session" / "state.json"
     assert paths.screenshots_dir.is_dir()
+    assert report_paths.report_dir == tmp_path / "runtime" / "reports" / "job_20260309_120000"
+    assert report_paths.summary_path == report_paths.report_dir / "summary.json"
+    assert report_paths.results_path == report_paths.report_dir / "results.jsonl"
+    assert report_paths.csv_path == report_paths.report_dir / "results.csv"
 
 
 def test_load_settings_merges_example_local_and_env(monkeypatch, tmp_path: Path) -> None:

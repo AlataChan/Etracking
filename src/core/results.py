@@ -64,3 +64,27 @@ def load_results_jsonl(path: str | Path) -> list[ReceiptResult]:
                 continue
             results.append(receipt_result_from_dict(json.loads(stripped)))
     return results
+
+
+def latest_results_by_order(results: list[ReceiptResult]) -> dict[str, ReceiptResult]:
+    latest: dict[str, ReceiptResult] = {}
+    for result in results:
+        latest[result.order_id] = result
+    return latest
+
+
+def result_has_valid_artifact(result: ReceiptResult, min_bytes: int = 1) -> bool:
+    if result.status is not ExecutionStatus.SUCCEEDED or result.artifact is None:
+        return False
+
+    artifact_path = result.artifact.path
+    if not artifact_path.exists() or not artifact_path.is_file():
+        return False
+
+    actual_size = artifact_path.stat().st_size
+    expected_min = max(min_bytes, int(result.artifact.byte_size))
+    return actual_size >= expected_min
+
+
+def run_id_from_results_path(path: str | Path) -> str:
+    return Path(path).resolve().parent.name

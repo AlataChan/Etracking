@@ -47,6 +47,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "column": "F",
         "skip_header": True,
     },
+    "batch": {
+        "session_recycle_orders": 50,
+        "session_retryable_failure_threshold": 5,
+    },
 }
 
 
@@ -168,6 +172,14 @@ class AppSettings:
     @property
     def retry_delay(self) -> float:
         return float(self.raw["retry"].get("delay", 0.5))
+
+    @property
+    def batch_session_recycle_orders(self) -> int:
+        return int(self.raw.get("batch", {}).get("session_recycle_orders", 50))
+
+    @property
+    def batch_session_retryable_failure_threshold(self) -> int:
+        return int(self.raw.get("batch", {}).get("session_retryable_failure_threshold", 5))
 
 
 def load_settings(project_root: Path | None = None) -> AppSettings:

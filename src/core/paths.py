@@ -12,6 +12,14 @@ def _resolve_path(project_root: Path, path: str | Path) -> Path:
 
 
 @dataclass(slots=True, frozen=True)
+class ReportPaths:
+    report_dir: Path
+    summary_path: Path
+    results_path: Path
+    csv_path: Path
+
+
+@dataclass(slots=True, frozen=True)
 class RuntimePaths:
     project_root: Path
     runtime_dir: Path
@@ -81,3 +89,12 @@ class RuntimePaths:
 
     def report_dir_for(self, run_id: str) -> Path:
         return self.reports_dir / run_id
+
+    def report_paths_for(self, run_id: str) -> ReportPaths:
+        report_dir = self.report_dir_for(run_id)
+        return ReportPaths(
+            report_dir=report_dir,
+            summary_path=report_dir / "summary.json",
+            results_path=report_dir / "results.jsonl",
+            csv_path=report_dir / "results.csv",
+        )
