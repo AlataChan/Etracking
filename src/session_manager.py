@@ -404,8 +404,8 @@ class SessionManager:
             logger.info("检测到 ETS 首页 e-payment 入口，执行 ERV 跳转")
             self._handoff_to_erv_main()
 
-        if self._any_visible(self.selectors.receipt_menu_items, timeout_ms=250):
-            logger.info("检测到 ERV/MAIN 收据菜单，进入 ERVQ1020")
+        if not self._ervq1020_ready():
+            logger.info("尚未到达 ERVQ1020，尝试从 ERV/MAIN 打开收据页面")
             self._open_receipt_page_from_erv_main()
 
         logger.info("开始执行税号和打印人前置准备")
@@ -426,13 +426,13 @@ class SessionManager:
         flow = self._get_entry_flow()
         logger.info("首次点击 e-payment tile")
         flow.click_epayment_tile()
-        if self._wait_for_erv_main_ready(timeout_seconds=1.5):
+        if self._wait_for_erv_main_ready(timeout_seconds=5.0):
             logger.info(f"首次点击后已到达 ERV/MAIN: {self.page.url}")
             return
 
         logger.info("首次点击未完成跳转，执行第二次点击")
         flow.click_epayment_tile()
-        if self._wait_for_erv_main_ready(timeout_seconds=1.5):
+        if self._wait_for_erv_main_ready(timeout_seconds=5.0):
             logger.info(f"第二次点击后已到达 ERV/MAIN: {self.page.url}")
             return
 
@@ -446,8 +446,14 @@ class SessionManager:
                 return false;
             }"""
         )
-        if invoked and self._wait_for_erv_main_ready(timeout_seconds=2.5):
+        if invoked and self._wait_for_erv_main_ready(timeout_seconds=5.0):
             logger.info(f"toPageERV() 调用后已到达 ERV/MAIN: {self.page.url}")
+            return
+
+        logger.info("所有点击方式失败，尝试直接导航到 ERV/MAIN")
+        self.page.goto("https://e-tracking.customs.go.th/ERV/MAIN", wait_until="domcontentloaded", timeout=30000)
+        if self._wait_for_erv_main_ready(timeout_seconds=5.0):
+            logger.info(f"直接导航后已到达 ERV/MAIN: {self.page.url}")
             return
 
         raise LookupError("Unable to reach ERV/MAIN from ETS home page")
@@ -470,13 +476,25 @@ class SessionManager:
             logger.info("当前已处于 ERVQ1020 就绪态，跳过菜单跳转")
             return
 
-        logger.info("点击 ERV/MAIN 左侧收据菜单")
-        self._get_entry_flow().open_receipt_menu()
-        if self._wait_for_ervq1020_ready(timeout_seconds=3.0):
-            logger.info("已到达 ERVQ1020")
+        if self._any_visible(self.selectors.receipt_menu_items, timeout_ms=5000):
+            logger.info("点击 ERV/MAIN 左侧收据菜单")
+            self._get_entry_flow().open_receipt_menu()
+            if self._wait_for_ervq1020_ready(timeout_seconds=5.0):
+                logger.info("已到达 ERVQ1020")
+                return
+
+        logger.info("菜单点击失败或未渲染，尝试直接导航到 ERVQ1020")
+        assert self.page is not None
+        self.page.goto(
+            "https://e-tracking.customs.go.th/ERV/ERVQ1020",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        if self._wait_for_ervq1020_ready(timeout_seconds=5.0):
+            logger.info(f"直接导航后已到达 ERVQ1020: {self.page.url}")
             return
 
-        raise LookupError("Unable to reach ERVQ1020 from ERV/MAIN receipt menu")
+        raise LookupError("Unable to reach ERVQ1020 from ERV/MAIN")
 
     def _wait_for_ervq1020_ready(self, timeout_seconds: float) -> bool:
         deadline = time.time() + timeout_seconds

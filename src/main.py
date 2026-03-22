@@ -1,27 +1,21 @@
 """
-主模块，程序入口。
+CLI adapter — thin wrapper over ReceiptApplicationService.
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
 import signal
 import sys
 import time
-from pathlib import Path
 
 from loguru import logger
 
+from src.application.receipt_service import ReceiptApplicationService
 from src.core.config import AppSettings, load_settings, with_settings_overrides
-from src.core.models import BatchRunResult, ExecutionStatus, ReceiptJob, ReceiptResult
+from src.core.models import BatchRunResult, ExecutionStatus
 from src.core.paths import RuntimePaths
-from src.core.results import build_run_id, latest_results_by_order, load_results_jsonl, run_id_from_results_path
-from src.integrations.run_ledger import RunLedger
-from src.integrations.report_writer import ReportWriter
-from src.session_manager import BatchSessionProcessor, SessionManager
 from src.support.logging import setup_logger
-from src.workflow.batch_runner import BatchRunner
 
 
 class _StopController:
@@ -49,122 +43,15 @@ class _StopController:
 
 def build_paths(
     settings: AppSettings,
-    output_dir: str | Path | None = None,
+    output_dir: str | None = None,
 ) -> RuntimePaths:
     return RuntimePaths.from_settings(settings, receipts_dir=output_dir).ensure()
 
 
-def process_single_order(
-    order_id: str,
-    use_saved_state: bool = True,
-    settings: AppSettings | None = None,
-    paths: RuntimePaths | None = None,
-) -> ReceiptResult:
-    resolved_settings = settings or load_settings()
-    resolved_paths = paths or build_paths(resolved_settings)
-
-    logger.info(f"\n===== 处理订单: {order_id} =====")
-
-    for retry in range(3):
-        try:
-            current_use_saved_state = use_saved_state and retry == 0
-            with SessionManager(
-                use_saved_state=current_use_saved_state,
-                settings=resolved_settings,
-                paths=resolved_paths,
-            ) as session:
-                return session.process_order_result(order_id)
-        except Exception as retry_error:
-            if retry < 2:
-                logger.warning(f"第{retry + 1}次尝试失败，准备重试: {retry_error}")
-                time.sleep(1)
-                continue
-            logger.exception(f"处理订单 {order_id} 时出错: {retry_error}")
-
-    return ReceiptResult(
-        order_id=order_id,
-        status=ExecutionStatus.FAILED,
-        reason="all retries exhausted before a valid PDF was captured",
-    )
-
-
-def process_batch_orders(
-    excel_path: str | Path | None = None,
-    sheet_name: str | None = None,
-    resume_results_path: str | Path | None = None,
-    use_saved_state: bool = True,
-    settings: AppSettings | None = None,
-    paths: RuntimePaths | None = None,
-) -> BatchRunResult:
-    resolved_settings = settings or load_settings()
-    resolved_paths = paths or build_paths(resolved_settings)
-    start_time = time.time()
-    started_at = datetime.now(UTC)
-    logger.info("\n===== 开始批量处理订单 =====")
-
-    runner = BatchRunner()
-    resume_path = Path(resume_results_path) if resume_results_path else None
-    run_id = run_id_from_results_path(resume_path) if resume_path else None
-    job = ReceiptJob(
-        order_ids=[],
-        excel_path=Path(excel_path) if excel_path else resolved_settings.excel_path,
-        sheet_name=sheet_name or resolved_settings.excel_sheet_name,
-        use_saved_state=use_saved_state,
-        output_dir=resolved_paths.receipts_dir,
-        run_id=run_id,
-        max_retries=resolved_settings.max_retries,
-        min_artifact_bytes=resolved_settings.min_pdf_bytes,
-        resume_results_path=resume_path,
-    )
-    job.order_ids = runner.load_order_ids(job)
-    if not job.run_id:
-        job.run_id = build_run_id(started_at)
-
-    writer = ReportWriter(resolved_paths)
-    previous_results = load_results_jsonl(resume_path) if resume_path else []
-    effective_results = latest_results_by_order(previous_results)
-    ledger = RunLedger(resolved_paths.report_paths_for(job.run_id))
-    stop_controller = _StopController()
-    stop_controller.install()
-    processor = BatchSessionProcessor(
-        use_saved_state=use_saved_state,
-        settings=resolved_settings,
-        paths=resolved_paths,
-    )
-
-    def snapshot_report(finished_at: datetime | None = None) -> BatchRunResult:
-        ordered_results = [effective_results[order_id] for order_id in job.order_ids if order_id in effective_results]
-        return BatchRunResult(
-            job=job,
-            run_id=job.run_id or "",
-            results=ordered_results,
-            started_at=started_at,
-            finished_at=finished_at,
-            planned_total=len(job.order_ids),
-            stopped_early=stop_controller.should_stop(),
-        )
-
-    def on_result(result: ReceiptResult) -> None:
-        effective_results[result.order_id] = result
-        ledger.append_result(result)
-        ledger.write_summary_snapshot(snapshot_report())
-
-    ledger.write_summary_snapshot(snapshot_report())
-
-    try:
-        report = runner.run(
-            job=job,
-            process_order=processor.process_order_result,
-            previous_results=previous_results,
-            on_result=on_result,
-            should_stop=stop_controller.should_stop,
-        )
-    finally:
-        processor.close()
-        stop_controller.restore()
-
-    report = writer.write(report)
-    elapsed = time.time() - start_time
+def _log_batch_summary(report: BatchRunResult) -> None:
+    elapsed = 0.0
+    if report.started_at and report.finished_at:
+        elapsed = (report.finished_at - report.started_at).total_seconds()
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
 
@@ -175,39 +62,6 @@ def process_batch_orders(
     logger.info(f"需要人工复核: {report.needs_human_review} 个订单")
     logger.info(f"处理用时: {int(hours)}小时 {int(minutes)}分钟 {int(seconds)}秒")
     logger.info(f"报告目录: {report.report_dir}")
-
-    return report
-
-
-def retry_failed_orders(
-    results_path: str | Path,
-    use_saved_state: bool = True,
-    settings: AppSettings | None = None,
-    paths: RuntimePaths | None = None,
-) -> BatchRunResult:
-    resolved_settings = settings or load_settings()
-    resolved_paths = paths or build_paths(resolved_settings)
-    previous_results = load_results_jsonl(results_path)
-    runner = BatchRunner()
-    retry_job = runner.retry_failed_job(
-        previous_results,
-        base_job=ReceiptJob(
-            order_ids=[],
-            use_saved_state=use_saved_state,
-            output_dir=resolved_paths.receipts_dir,
-            max_retries=resolved_settings.max_retries,
-        ),
-    )
-    writer = ReportWriter(resolved_paths)
-
-    with SessionManager(
-        use_saved_state=use_saved_state,
-        settings=resolved_settings,
-        paths=resolved_paths,
-    ) as session:
-        report = runner.run(job=retry_job, process_order=session.process_order_result)
-
-    return writer.write(report)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -257,38 +111,41 @@ def main() -> None:
 
     logger.info("=== 泰国海关E-tracking系统PDF下载工具 ===")
 
+    service = ReceiptApplicationService(settings=settings, paths=paths)
     use_saved_state = not args.no_saved_state
+
     if args.no_saved_state:
         logger.info("已禁用使用保存的会话状态")
 
     if args.order_id:
-        result = process_single_order(
-            args.order_id,
-            use_saved_state=use_saved_state,
-            settings=settings,
-            paths=paths,
-        )
-        sys.exit(0 if result.status is ExecutionStatus.SUCCEEDED else 1)
+        report = service.run_single(args.order_id, use_saved_state=use_saved_state)
+        result = report.results[0] if report.results else None
+        sys.exit(0 if result and result.status is ExecutionStatus.SUCCEEDED else 1)
 
     if args.batch or args.excel:
-        report = process_batch_orders(
-            excel_path=args.excel,
-            sheet_name=args.sheet,
-            resume_results_path=args.resume_results,
-            use_saved_state=use_saved_state,
-            settings=settings,
-            paths=paths,
-        )
+        stop_controller = _StopController()
+        stop_controller.install()
+        try:
+            report = service.run_batch(
+                excel_path=args.excel,
+                sheet_name=args.sheet,
+                resume_results_path=args.resume_results,
+                use_saved_state=use_saved_state,
+                should_stop=stop_controller.should_stop,
+            )
+        finally:
+            stop_controller.restore()
+
+        _log_batch_summary(report)
         exit_code = 0 if report.failed == 0 and report.needs_human_review == 0 else 1
         sys.exit(exit_code)
 
     if args.retry_failed_from:
-        report = retry_failed_orders(
+        report = service.retry_failed(
             results_path=args.retry_failed_from,
             use_saved_state=use_saved_state,
-            settings=settings,
-            paths=paths,
         )
+        _log_batch_summary(report)
         exit_code = 0 if report.failed == 0 and report.needs_human_review == 0 else 1
         sys.exit(exit_code)
 

@@ -1,0 +1,23 @@
+{
+  "_comment": "Etracking MCP Server configuration example. Copy the relevant section to your client's MCP config.",
+
+  "Claude Code (~/.claude.json or project .claude/settings.local.json)": {
+    "mcpServers": {
+      "etracking": {
+        "command": "python",
+        "args": ["-m", "src.mcp.server"],
+        "cwd": "/Users/apple/Documents/2.1 AI Journey/Cursor_projects/Etracking"
+      }
+    }
+  },
+
+  "Cursor (.cursor/mcp.json)": {
+    "mcpServers": {
+      "etracking": {
+        "command": "python",
+        "args": ["-m", "src.mcp.server"],
+        "cwd": "/Users/apple/Documents/2.1 AI Journey/Cursor_projects/Etracking"
+      }
+    }
+  }
+}
