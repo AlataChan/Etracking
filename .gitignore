@@ -11,6 +11,7 @@ venv/
 .ccb/
 .claude/
 .cursor/
+.serena/
 
 logs/
 downloads/
